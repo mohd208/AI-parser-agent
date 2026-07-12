@@ -38,8 +38,12 @@ def test_dockerfile(repo_dir, name, job_id):
     reason to discard it (Claude already wrote it, and the failure itself —
     plus the captured container logs — is exactly what's needed to fix it).
     """
-    image_tag = f"devops-ai-agent/{name}:test"
-    container_name = f"devops-ai-agent-{name}-test"
+    # Docker repository names must be lowercase; `name` comes straight from
+    # the trigger payload (e.g. "AI-node-app") and would otherwise make
+    # `docker build -t` reject the tag outright.
+    slug = name.lower()
+    image_tag = f"devops-ai-agent/{slug}:test"
+    container_name = f"devops-ai-agent-{slug}-test"
 
     outcome = {"built": False, "started": False, "logs": None, "error": None}
 
