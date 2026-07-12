@@ -24,6 +24,9 @@ def _build_prompt(environment, name):
         f'Then create a production-ready Dockerfile in the repo root suited for the "{environment}" environment. Follow best practices:',
         '- Pin a specific base image tag (no ":latest").',
         "- Use a multi-stage build if the language/framework benefits from it (e.g. compiled languages, or separating build deps from runtime deps).",
+        "  If you do, double-check every COPY --from=<stage> source actually gets created in that stage — e.g. a Node",
+        "  package with zero dependencies won't produce a node_modules directory at all, which breaks a later COPY of it.",
+        "  When there's nothing to gain from staging (no real deps to cache separately), prefer a single-stage build instead.",
         "- Run the final process as a non-root user.",
         "- Only copy in what's needed for the build/runtime (leverage layer caching for dependency installs).",
         "- Expose the port the app actually listens on, if you can determine it.",
@@ -33,6 +36,19 @@ def _build_prompt(environment, name):
         "When finished, reply with ONLY a compact JSON object (no markdown fences) with this shape:",
         '{"language": string, "framework": string|null, "baseImage": string, "filesWritten": string[], "notes": string}',
     ])
+
+
+def _strip_code_fence(text):
+    """Claude is told to reply with raw JSON, no markdown fences, but doesn't
+    always comply — strip a leading/trailing ``` (optionally ```json) before
+    parsing so a fenced reply doesn't get treated as unparseable."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[: -len("```")]
+    return text.strip()
 
 
 def _describe_event(event):
@@ -148,7 +164,7 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
         raise RuntimeError("claude finished but produced no result event")
 
     try:
-        summary = json.loads(result_event["result"])
+        summary = json.loads(_strip_code_fence(result_event["result"]))
     except (json.JSONDecodeError, KeyError, TypeError):
         summary = {"raw": result_event.get("result")}
 
