@@ -45,7 +45,7 @@ def test_dockerfile(repo_dir, name, job_id):
     image_tag = f"devops-ai-agent/{slug}:test"
     container_name = f"devops-ai-agent-{slug}-test"
 
-    outcome = {"built": False, "started": False, "logs": None, "error": None}
+    outcome = {"built": False, "started": False, "logs": None, "error": None, "imageTag": image_tag}
 
     try:
         # Clear out any leftover container from a previous run of this same

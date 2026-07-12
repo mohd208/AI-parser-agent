@@ -8,6 +8,7 @@ from docker_test import test_dockerfile
 from git_sync import sync_repo
 from job_store import append_log, create_job, get_job, start_worker
 from lang_detect import quick_scan
+from notify_agent2 import notify_agent2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +81,23 @@ def handle_job(job):
     # Phase 4: prove the Dockerfile actually works, don't just trust it.
     append_log(job_id, "Testing the generated Dockerfile (docker build + run)...")
     result["dockerTest"] = test_dockerfile(repo_dir, name, job_id=job_id)
+
+    # Phase 5: hand off to agent 2 (build/publish) — only if we actually have
+    # a built image; a smoke-test crash (e.g. the container not staying up)
+    # doesn't block this, only a failed `docker build` does.
+    if result["dockerTest"].get("built"):
+        append_log(job_id, "Handing off to agent 2 for image publish...")
+        notify_agent2(
+            {
+                "appName": name,
+                "environment": environment,
+                "imageTag": result["dockerTest"]["imageTag"],
+                "sourceJobId": job_id,
+            },
+            job_id=job_id,
+        )
+    else:
+        append_log(job_id, "Skipping handoff to agent 2: Docker image was not successfully built")
 
     append_log(job_id, "Job complete")
     return result
