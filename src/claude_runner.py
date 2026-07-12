@@ -104,7 +104,9 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
 
     args = [
         "claude",
-        "--bare",
+        # NOT --bare: it isolates the run into a config/session context that
+        # doesn't see the `/login`-persisted subscription auth, which is why
+        # headless runs failed "Not logged in" even with a working login.
         "-p", prompt,
         "--add-dir", ".",
         "--permission-mode", "acceptEdits",
