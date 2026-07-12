@@ -34,7 +34,9 @@ def _build_prompt(environment, name):
         "",
         "Do not modify any files other than creating/updating the Dockerfile and .dockerignore.",
         "When finished, reply with ONLY a compact JSON object (no markdown fences) with this shape:",
-        '{"language": string, "framework": string|null, "baseImage": string, "filesWritten": string[], "notes": string}',
+        '{"language": string, "framework": string|null, "baseImage": string, "port": number|null, '
+        '"filesWritten": string[], "notes": string}',
+        '("port" is the container port EXPOSEd in the Dockerfile, or null if the app doesn\'t listen on one.)',
     ])
 
 
