@@ -42,7 +42,7 @@ def _describe_event(event):
     etype = event.get("type")
 
     if etype == "system" and event.get("subtype") == "init":
-        return f"Claude session started (model={event.get('model')})"
+        return [f"Claude session started (model={event.get('model')})"]
 
     if etype == "assistant":
         lines = []
