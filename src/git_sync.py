@@ -3,6 +3,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from job_store import append_log
+
 WORKSPACES_ROOT = Path.cwd() / "workspaces"
 
 # name comes from the trigger payload and becomes a directory name — reject
@@ -16,23 +18,28 @@ def repo_dir_for(name):
     return WORKSPACES_ROOT / name
 
 
-def _git(*args, cwd):
+def _git(*args, cwd, job_id):
+    append_log(job_id, f"$ git {' '.join(args)}")
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    for line in (proc.stdout + proc.stderr).strip().splitlines():
+        append_log(job_id, line)
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
 
-def sync_repo(repo_url, name, branch):
+def sync_repo(repo_url, name, branch, job_id):
     WORKSPACES_ROOT.mkdir(parents=True, exist_ok=True)
     repo_dir = repo_dir_for(name)
 
     if (repo_dir / ".git").exists():
-        _git("fetch", "origin", branch, cwd=repo_dir)
-        _git("checkout", branch, cwd=repo_dir)
-        _git("reset", "--hard", f"origin/{branch}", cwd=repo_dir)
-        _git("clean", "-fd", cwd=repo_dir)
+        append_log(job_id, f"Existing checkout found at {repo_dir}, updating in place")
+        _git("fetch", "origin", branch, cwd=repo_dir, job_id=job_id)
+        _git("checkout", branch, cwd=repo_dir, job_id=job_id)
+        _git("reset", "--hard", f"origin/{branch}", cwd=repo_dir, job_id=job_id)
+        _git("clean", "-fd", cwd=repo_dir, job_id=job_id)
     else:
+        append_log(job_id, f"No existing checkout, cloning {repo_url} into {repo_dir}")
         shutil.rmtree(repo_dir, ignore_errors=True)
-        _git("clone", "--branch", branch, "--single-branch", repo_url, str(repo_dir), cwd=None)
+        _git("clone", "--branch", branch, "--single-branch", repo_url, str(repo_dir), cwd=None, job_id=job_id)
 
     return repo_dir

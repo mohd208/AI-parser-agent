@@ -1,7 +1,10 @@
+import logging
 import queue
 import threading
 import uuid
 from datetime import datetime, timezone
+
+log = logging.getLogger("devops-ai-agent.job_store")
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -45,6 +48,10 @@ def _update_job(job_id, **patch):
 
 
 def append_log(job_id, line):
+    """Records a log line on the job AND prints it live, so a single call
+    site gives you both the `GET /jobs/:id` history and console/journald
+    verbosity when this is running as a deployed service."""
+    log.info("[%s] %s", job_id, line)
     with _jobs_lock:
         job = _jobs.get(job_id)
         if not job:
@@ -63,13 +70,16 @@ def start_worker(handler):
             job = get_job(job_id)
             if job is None:
                 continue
+            log.info("[%s] Job started (payload=%s)", job_id, job["payload"])
             _update_job(job_id, status="running")
             try:
                 result = handler(job)
                 _update_job(job_id, status="done", result=result)
+                log.info("[%s] Job done", job_id)
             except Exception as exc:
                 _update_job(job_id, status="failed", error=str(exc))
                 append_log(job_id, f"ERROR: {exc}")
+                log.exception("[%s] Job failed", job_id)
 
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()

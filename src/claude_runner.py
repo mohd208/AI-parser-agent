@@ -2,6 +2,9 @@ import json
 import os
 import platform
 import subprocess
+import threading
+
+from job_store import append_log
 
 READ_ONLY_BASH = ["Bash(ls *)", "Bash(cat *)", "Bash(pwd)", "Bash(find *)", "Bash(grep *)"]
 ALLOWED_TOOLS = ",".join(["Read", "Write", *READ_ONLY_BASH])
@@ -32,12 +35,28 @@ def _build_prompt(environment, name):
     ])
 
 
-def generate_dockerfile(repo_dir, environment, name):
+def _pump(pipe, job_id, prefix, collected):
+    """Reads a subprocess pipe line-by-line as output arrives and forwards
+    each line through append_log (console + job history) in real time,
+    instead of waiting for the process to exit."""
+    for raw_line in iter(pipe.readline, ""):
+        line = raw_line.rstrip("\n")
+        if line:
+            append_log(job_id, f"{prefix} {line}")
+            collected.append(line)
+    pipe.close()
+
+
+def generate_dockerfile(repo_dir, environment, name, job_id):
     """Runs Claude Code headless (`claude -p`) inside `repo_dir`, authenticated
     via the Pro/Max subscription session (not an API key), to analyze the repo
     and write a Dockerfile. `acceptEdits` auto-approves file writes; Bash
     beyond the read-only allowlist below would still prompt, which would hang
     an unattended run, so we deliberately don't grant more than that.
+
+    `--verbose` makes Claude Code narrate each tool call (reads, writes) on
+    stderr as it happens; we stream that live via append_log instead of only
+    surfacing the final result once the whole run is done.
     """
     prompt = _build_prompt(environment, name)
 
@@ -52,29 +71,50 @@ def generate_dockerfile(repo_dir, environment, name):
         "--permission-mode", "acceptEdits",
         "--allowedTools", ALLOWED_TOOLS,
         "--output-format", "json",
+        "--verbose",
     ]
 
-    proc = subprocess.run(
+    append_log(job_id, f"$ claude --bare -p <prompt> --add-dir . --permission-mode acceptEdits "
+                        f"--allowedTools {ALLOWED_TOOLS} --output-format json --verbose")
+
+    proc = subprocess.Popen(
         args,
         cwd=repo_dir,
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        bufsize=1,
         shell=_USE_SHELL,
     )
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude exited with code {proc.returncode}: {proc.stderr or proc.stdout}")
+    stdout_lines, stderr_lines = [], []
+    t_out = threading.Thread(target=_pump, args=(proc.stdout, job_id, "[claude]", stdout_lines))
+    t_err = threading.Thread(target=_pump, args=(proc.stderr, job_id, "[claude:verbose]", stderr_lines))
+    t_out.start()
+    t_err.start()
+
+    returncode = proc.wait()
+    t_out.join()
+    t_err.join()
+
+    stdout = "\n".join(stdout_lines)
+    stderr = "\n".join(stderr_lines)
+
+    if returncode != 0:
+        raise RuntimeError(f"claude exited with code {returncode}: {stderr or stdout}")
 
     try:
-        parsed = json.loads(proc.stdout)
+        parsed = json.loads(stdout)
     except json.JSONDecodeError:
-        raise RuntimeError(f"Could not parse claude output as JSON: {proc.stdout}")
+        raise RuntimeError(f"Could not parse claude output as JSON: {stdout}")
 
     try:
         summary = json.loads(parsed["result"])
     except (json.JSONDecodeError, KeyError, TypeError):
         summary = {"raw": parsed.get("result")}
+
+    append_log(job_id, f"Claude summary: {summary}")
 
     return {
         "summary": summary,
