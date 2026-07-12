@@ -75,11 +75,11 @@ def start_worker(handler):
             try:
                 result = handler(job)
                 _update_job(job_id, status="done", result=result)
-                log.info("[%s] Job done", job_id)
+                log.info("[%s] Job finished: DONE", job_id)
             except Exception as exc:
                 _update_job(job_id, status="failed", error=str(exc))
                 append_log(job_id, f"ERROR: {exc}")
-                log.exception("[%s] Job failed", job_id)
+                log.info("[%s] Job finished: FAILED", job_id)
 
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()

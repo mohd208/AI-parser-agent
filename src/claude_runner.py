@@ -35,15 +35,52 @@ def _build_prompt(environment, name):
     ])
 
 
-def _pump(pipe, job_id, prefix, collected):
-    """Reads a subprocess pipe line-by-line as output arrives and forwards
-    each line through append_log (console + job history) in real time,
-    instead of waiting for the process to exit."""
+def _describe_event(event):
+    """Turns one stream-json event into short human-readable line(s) instead
+    of the raw event JSON. Returns None for bookkeeping event types that
+    aren't worth showing (tool results being fed back, etc.)."""
+    etype = event.get("type")
+
+    if etype == "system" and event.get("subtype") == "init":
+        return f"Claude session started (model={event.get('model')})"
+
+    if etype == "assistant":
+        lines = []
+        for block in (event.get("message") or {}).get("content", []):
+            if block.get("type") == "text" and block.get("text", "").strip():
+                lines.append(f"Claude: {block['text'].strip()}")
+            elif block.get("type") == "tool_use":
+                tool_input = block.get("input", {})
+                detail = tool_input.get("file_path") or tool_input.get("command") or tool_input.get("pattern") or ""
+                lines.append(f"Claude is using {block.get('name')}: {detail}".strip())
+        return lines or None
+
+    return None
+
+
+def _pump_events(pipe, job_id, events):
+    """Reads newline-delimited stream-json events as they're emitted and logs
+    a concise description of each one live, instead of waiting for the whole
+    run to finish and dumping one giant blob."""
+    for raw_line in iter(pipe.readline, ""):
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        events.append(event)
+        for line in _describe_event(event) or []:
+            append_log(job_id, line)
+    pipe.close()
+
+
+def _pump_stderr(pipe, job_id):
     for raw_line in iter(pipe.readline, ""):
         line = raw_line.rstrip("\n")
         if line:
-            append_log(job_id, f"{prefix} {line}")
-            collected.append(line)
+            append_log(job_id, f"[claude:stderr] {line}")
     pipe.close()
 
 
@@ -54,9 +91,11 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
     beyond the read-only allowlist below would still prompt, which would hang
     an unattended run, so we deliberately don't grant more than that.
 
-    `--verbose` makes Claude Code narrate each tool call (reads, writes) on
-    stderr as it happens; we stream that live via append_log instead of only
-    surfacing the final result once the whole run is done.
+    `--output-format stream-json` emits one JSON event per line as things
+    happen (session init, each tool call, the final result), which is what
+    actually streams live — plain `json` output only gets flushed as a single
+    blob once the whole run is over, since the CLI fully buffers stdout when
+    it isn't attached to a TTY.
     """
     prompt = _build_prompt(environment, name)
 
@@ -70,12 +109,11 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
         "--add-dir", ".",
         "--permission-mode", "acceptEdits",
         "--allowedTools", ALLOWED_TOOLS,
-        "--output-format", "json",
-        "--verbose",
+        "--output-format", "stream-json",
+        "--verbose",  # required by the CLI whenever --print is combined with stream-json
     ]
 
-    append_log(job_id, f"$ claude --bare -p <prompt> --add-dir . --permission-mode acceptEdits "
-                        f"--allowedTools {ALLOWED_TOOLS} --output-format json --verbose")
+    append_log(job_id, "Starting Claude Code analysis...")
 
     proc = subprocess.Popen(
         args,
@@ -88,9 +126,9 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
         shell=_USE_SHELL,
     )
 
-    stdout_lines, stderr_lines = [], []
-    t_out = threading.Thread(target=_pump, args=(proc.stdout, job_id, "[claude]", stdout_lines))
-    t_err = threading.Thread(target=_pump, args=(proc.stderr, job_id, "[claude:verbose]", stderr_lines))
+    events = []
+    t_out = threading.Thread(target=_pump_events, args=(proc.stdout, job_id, events))
+    t_err = threading.Thread(target=_pump_stderr, args=(proc.stderr, job_id))
     t_out.start()
     t_err.start()
 
@@ -98,26 +136,22 @@ def generate_dockerfile(repo_dir, environment, name, job_id):
     t_out.join()
     t_err.join()
 
-    stdout = "\n".join(stdout_lines)
-    stderr = "\n".join(stderr_lines)
+    result_event = next((e for e in reversed(events) if e.get("type") == "result"), None)
 
-    if returncode != 0:
-        raise RuntimeError(f"claude exited with code {returncode}: {stderr or stdout}")
+    if returncode != 0 or (result_event and result_event.get("is_error")):
+        message = result_event.get("result") if result_event else f"claude exited with code {returncode}"
+        raise RuntimeError(f"Claude run failed: {message}")
 
-    try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Could not parse claude output as JSON: {stdout}")
+    if result_event is None:
+        raise RuntimeError("claude finished but produced no result event")
 
     try:
-        summary = json.loads(parsed["result"])
+        summary = json.loads(result_event["result"])
     except (json.JSONDecodeError, KeyError, TypeError):
-        summary = {"raw": parsed.get("result")}
-
-    append_log(job_id, f"Claude summary: {summary}")
+        summary = {"raw": result_event.get("result")}
 
     return {
         "summary": summary,
-        "costUsd": parsed.get("total_cost_usd"),
-        "sessionId": parsed.get("session_id"),
+        "costUsd": result_event.get("total_cost_usd"),
+        "sessionId": result_event.get("session_id"),
     }
