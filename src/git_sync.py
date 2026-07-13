@@ -43,3 +43,14 @@ def sync_repo(repo_url, name, branch, job_id):
         _git("clone", "--branch", branch, "--single-branch", repo_url, str(repo_dir), cwd=None, job_id=job_id)
 
     return repo_dir
+
+
+def get_short_sha(repo_dir, job_id):
+    """Used to build a deterministic image tag (`<environment>-<short_sha>`)
+    that agent 1 can hand to agents 2, 3 and 4 *before* the image is actually
+    pushed — so the K8s manifest (agent 3) can reference the right tag
+    without having to wait for the image push (agent 2) to finish first."""
+    proc = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo_dir, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git rev-parse --short HEAD failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()

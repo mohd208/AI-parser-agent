@@ -5,10 +5,10 @@ from flask import Flask, jsonify, request
 
 from claude_runner import generate_dockerfile
 from docker_test import test_dockerfile
-from git_sync import sync_repo
+from fan_out import fan_out_to_downstream_agents
+from git_sync import get_short_sha, sync_repo
 from job_store import append_log, create_job, get_job, start_worker
 from lang_detect import quick_scan
-from notify_agent2 import notify_agent2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,16 +82,21 @@ def handle_job(job):
     append_log(job_id, "Testing the generated Dockerfile (docker build + run)...")
     result["dockerTest"] = test_dockerfile(repo_dir, name, job_id=job_id)
 
-    # Phase 5: hand off to agent 2 (build/publish) — only if we actually have
-    # a built image; a smoke-test crash (e.g. the container not staying up)
-    # doesn't block this, only a failed `docker build` does.
+    # Phase 5: fan out to agents 2 (image push), 3 (K8s manifests) and 4
+    # (GitHub workflow) in parallel — only if we actually have a built image;
+    # a smoke-test crash (e.g. the container not staying up) doesn't block
+    # this, only a failed `docker build` does.
     if result["dockerTest"].get("built"):
-        append_log(job_id, "Handing off to agent 2 for image publish...")
-        notify_agent2(
+        short_sha = get_short_sha(repo_dir, job_id=job_id)
+        image_tag_suffix = f"{environment}-{short_sha}"
+        append_log(job_id, f"Deterministic image tag for this run: {image_tag_suffix}")
+
+        fan_out_to_downstream_agents(
             {
                 "appName": name,
                 "environment": environment,
-                "imageTag": result["dockerTest"]["imageTag"],
+                "localImageTag": result["dockerTest"]["imageTag"],
+                "imageTagSuffix": image_tag_suffix,
                 "repoDir": str(repo_dir),
                 "port": summary.get("port"),
                 "language": summary.get("language"),
@@ -101,7 +106,7 @@ def handle_job(job):
             job_id=job_id,
         )
     else:
-        append_log(job_id, "Skipping handoff to agent 2: Docker image was not successfully built")
+        append_log(job_id, "Skipping handoff to agents 2/3/4: Docker image was not successfully built")
 
     append_log(job_id, "Job complete")
     return result
