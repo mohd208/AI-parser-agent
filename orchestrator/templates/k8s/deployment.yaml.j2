@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ resource_name }}
+  namespace: {{ namespace }}
+  labels:
+    app: {{ resource_name }}
+    tags.datadoghq.com/env: {{ environment }}
+    tags.datadoghq.com/service: {{ app_name }}
+    tags.datadoghq.com/version: "{{ image_tag_placeholder }}"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: {{ resource_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ resource_name }}
+        tags.datadoghq.com/env: {{ environment }}
+        tags.datadoghq.com/service: {{ app_name }}
+        tags.datadoghq.com/version: "{{ image_tag_placeholder }}"
+      annotations:
+        ad.datadoghq.com/{{ resource_name }}.logs: '[{"source":"{{ app_name }}","service":"{{ app_name }}"}]'
+    spec:
+      serviceAccountName: {{ resource_name }}
+      containers:
+        - name: {{ resource_name }}
+          # Placeholder - substituted with the real ECR image URI:tag by the
+          # deploy workflow. Nothing account/region-specific is committed here.
+          image: "{{ image_uri_placeholder }}"
+          ports:
+            - containerPort: {{ port }}
+          env:
+            - name: DD_ENV
+              value: "{{ environment }}"
+            - name: DD_SERVICE
+              value: "{{ app_name }}"
+            - name: DD_VERSION
+              value: "{{ image_tag_placeholder }}"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: {{ port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {{ port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20

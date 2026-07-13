@@ -1,0 +1,16 @@
+FROM node:{{ runtime.version }}-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+{% if has_lockfile %}RUN npm ci
+{% else %}RUN npm install
+{% endif %}COPY . .
+RUN npm run build --if-present
+
+FROM node:{{ runtime.version }}-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app ./
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+USER app
+EXPOSE {{ runtime.port }}
+CMD ["npm", "start"]

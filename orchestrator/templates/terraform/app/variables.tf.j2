@@ -1,0 +1,30 @@
+variable "app_name" {
+  type    = string
+  default = "{{ app_name }}"
+}
+
+variable "environment" {
+  type    = string
+  default = "{{ environment }}"
+}
+
+# The variables below are intentionally NOT baked in with defaults. The
+# GitHub Actions workflows (infra-terraform.yml / deploy.yml) set them from
+# this repo's Environment variables (Settings -> Environments -> {{ environment }}
+# -> Variables), via TF_VAR_* environment variables. Edit the values there,
+# not here - that's the whole point of keeping them out of committed code.
+
+variable "aws_region" {
+  type        = string
+  description = "From TF_VAR_aws_region, sourced from the AWS_REGION repo/environment variable."
+}
+
+variable "eks_cluster_name" {
+  type        = string
+  description = "From TF_VAR_eks_cluster_name, sourced from the EKS_CLUSTER_NAME repo/environment variable."
+}
+
+variable "eks_oidc_provider_arn" {
+  type        = string
+  description = "From TF_VAR_eks_oidc_provider_arn, sourced from the EKS_OIDC_PROVIDER_ARN repo/environment variable."
+}

@@ -1,0 +1,10 @@
+# devops-ai-agent could not detect a known language from marker files
+# (package.json, requirements.txt/pyproject.toml, pom.xml/build.gradle,
+# go.mod, *.csproj, Gemfile, composer.json). The Claude enhance pass that
+# runs right after this is templated should replace this file with a real
+# multi-stage Dockerfile once it inspects the actual source tree.
+FROM alpine:3.20
+WORKDIR /app
+COPY . .
+EXPOSE {{ runtime.port }}
+CMD ["true"]

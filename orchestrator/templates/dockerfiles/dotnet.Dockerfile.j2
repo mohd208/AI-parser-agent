@@ -1,0 +1,12 @@
+FROM mcr.microsoft.com/dotnet/sdk:{{ runtime.version }} AS build
+WORKDIR /app
+COPY . .
+RUN dotnet publish -c Release -o /out
+
+FROM mcr.microsoft.com/dotnet/aspnet:{{ runtime.version }}
+WORKDIR /app
+COPY --from=build /out ./
+EXPOSE {{ runtime.port }}
+ENV ASPNETCORE_URLS=http://+:{{ runtime.port }}
+USER app
+ENTRYPOINT ["dotnet", "app.dll"]

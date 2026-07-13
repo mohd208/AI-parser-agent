@@ -1,0 +1,28 @@
+terraform {
+  required_version = ">= 1.7"
+
+  required_providers {
+    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+  }
+
+  # Bucket/key/region/dynamodb_table are intentionally NOT set here - they're
+  # supplied by `terraform init -backend-config=...` in the GitHub Actions
+  # workflow (see templates/github-workflows/infra-terraform.yml.j2), sourced
+  # from this repo's Environment variables (Settings -> Environments ->
+  # {{ environment }} -> Variables: TF_STATE_BUCKET, TF_LOCK_TABLE,
+  # AWS_REGION). Change the state location there, not here.
+  backend "s3" {}
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# NOTE: this app module intentionally does NOT manage Kubernetes resources
+# (namespace/deployment/etc.) via Terraform - those live in k8s/{{ environment }}/
+# and are applied by the deploy pipeline via kubectl, so there is a single
+# owner for cluster-side objects. Terraform here only owns AWS resources:
+# the ECR repo and the IRSA IAM role that the service account assumes.
+data "aws_eks_cluster" "this" {
+  name = var.eks_cluster_name
+}

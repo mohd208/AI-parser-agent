@@ -1,0 +1,16 @@
+FROM python:{{ runtime.version }}-slim AS build
+WORKDIR /app
+COPY requirements.txt* pyproject.toml* poetry.lock* ./
+RUN pip install --no-cache-dir --user -r requirements.txt 2>/dev/null || \
+    (pip install --no-cache-dir --user poetry && poetry export -f requirements.txt --output requirements.txt --without-hashes && pip install --no-cache-dir --user -r requirements.txt) || true
+COPY . .
+
+FROM python:{{ runtime.version }}-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PATH=/root/.local/bin:$PATH
+COPY --from=build /root/.local /root/.local
+COPY --from=build /app ./
+RUN useradd -m app && chown -R app:app /app
+USER app
+EXPOSE {{ runtime.port }}
+CMD ["python", "-m", "app.main"]

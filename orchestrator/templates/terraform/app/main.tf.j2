@@ -1,0 +1,84 @@
+locals {
+  # Naming convention: every AWS/K8s resource this module owns is named
+  # <application_name>-<environment>, so dev/staging/prod of the same app
+  # never collide (same convention the K8s manifests use - see
+  # templates/k8s/*.j2 / app/k8s_gen.py).
+  resource_name    = "${var.app_name}-${var.environment}"
+  oidc_issuer_host = replace(var.eks_oidc_provider_arn, "/^.*oidc-provider//", "")
+}
+
+resource "aws_ecr_repository" "this" {
+  name                 = local.resource_name
+  image_tag_mutability = "IMMUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    app         = var.app_name
+    environment = var.environment
+    managed_by  = "devops-ai-agent"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "this" {
+  repository = aws_ecr_repository.this.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "expire untagged images after 14 days"
+      selection = {
+        tagStatus   = "untagged"
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = 14
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+data "aws_iam_policy_document" "irsa_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.eks_oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_issuer_host}:sub"
+      # Must match the ServiceAccount name k8s_gen.py generates
+      # (templates/k8s/serviceaccount-irsa.yaml.j2), which is also
+      # local.resource_name inside its own namespace of the same name.
+      values = ["system:serviceaccount:${local.resource_name}:${local.resource_name}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "irsa" {
+  name               = "${local.resource_name}-irsa"
+  assume_role_policy = data.aws_iam_policy_document.irsa_trust.json
+}
+
+data "aws_iam_policy_document" "irsa_permissions" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchGetImage",
+      "ecr:BatchCheckLayerAvailability",
+    ]
+    resources = [aws_ecr_repository.this.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "irsa" {
+  name   = "${local.resource_name}-irsa"
+  role   = aws_iam_role.irsa.id
+  policy = data.aws_iam_policy_document.irsa_permissions.json
+}

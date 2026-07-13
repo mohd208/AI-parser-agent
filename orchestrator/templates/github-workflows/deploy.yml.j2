@@ -1,0 +1,82 @@
+name: Deploy - K8s ({{ app_name }} / {{ environment }})
+
+on:
+  workflow_run:
+    workflows: ["Infra - Terraform ({{ app_name }} / {{ environment }})"]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-{{ app_name }}-{{ environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Guarantees ordering: this job only runs once the infra-terraform
+    # workflow above has completed successfully, so ECR/IAM always exist
+    # before we try to push an image or apply manifests that reference them.
+    if: {% raw %}${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}{% endraw %}
+    runs-on: ubuntu-latest
+    # Same Environment as infra-terraform.yml, so it sees the same Variables
+    # (Settings -> Environments -> {{ environment }} -> Variables).
+    environment: {{ environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: {% raw %}${{ github.event.workflow_run.head_sha || github.sha }}{% endraw %}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: {% raw %}${{ vars.GITHUB_OIDC_ROLE_ARN }}{% endraw %}
+          aws-region: {% raw %}${{ vars.AWS_REGION }}{% endraw %}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      # Re-read this app's terraform outputs (ECR URL, IRSA role ARN) from
+      # the S3 backend state - written by the infra-terraform workflow that
+      # just ran. Cheaper and simpler than passing job outputs across
+      # workflow_run, which GitHub Actions doesn't support directly.
+      - id: tf-outputs
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket={% raw %}${{ vars.TF_STATE_BUCKET }}{% endraw %}" \
+            -backend-config="key={{ environment }}/{{ app_name }}/terraform.tfstate" \
+            -backend-config="region={% raw %}${{ vars.AWS_REGION }}{% endraw %}" \
+            -backend-config="dynamodb_table={% raw %}${{ vars.TF_LOCK_TABLE }}{% endraw %}"
+          echo "iam_role_arn=$(terraform output -raw iam_role_arn)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ECR
+        run: |
+          aws ecr get-login-password --region {% raw %}${{ vars.AWS_REGION }}{% endraw %} | \
+            docker login --username AWS --password-stdin "$(echo {% raw %}${{ steps.tf-outputs.outputs.ecr_repository_url }}{% endraw %} | cut -d/ -f1)"
+
+      - name: Build and push image
+        id: image
+        run: |
+          TAG="{% raw %}${{ github.event.workflow_run.head_sha || github.sha }}{% endraw %}"
+          URI="{% raw %}${{ steps.tf-outputs.outputs.ecr_repository_url }}{% endraw %}:$TAG"
+          docker build -t "$URI" .
+          docker push "$URI"
+          echo "uri=$URI" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name {% raw %}${{ vars.EKS_CLUSTER_NAME }}{% endraw %} --region {% raw %}${{ vars.AWS_REGION }}{% endraw %}
+
+      - name: Substitute placeholders and apply manifests
+        run: |
+          sed -i "s|__IRSA_ROLE_ARN__|{% raw %}${{ steps.tf-outputs.outputs.iam_role_arn }}{% endraw %}|g" k8s/{{ environment }}/serviceaccount.yaml
+          sed -i "s|__IMAGE_URI__|{% raw %}${{ steps.image.outputs.uri }}{% endraw %}|g" k8s/{{ environment }}/deployment.yaml
+          sed -i "s|__IMAGE_TAG__|{% raw %}${{ steps.image.outputs.tag }}{% endraw %}|g" k8s/{{ environment }}/deployment.yaml
+          kubectl apply -f k8s/{{ environment }}/
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/{{ app_name }}-{{ environment }} -n {{ app_name }}-{{ environment }} --timeout=180s

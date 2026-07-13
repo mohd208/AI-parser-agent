@@ -1,0 +1,87 @@
+name: Infra - Terraform ({{ app_name }} / {{ environment }})
+
+on:
+  push:
+    branches: ["{{ base_branch }}"]
+    paths:
+      - "terraform/**"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: infra-terraform-{{ app_name }}-{{ environment }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    # Scopes this job to the GitHub Environment named "{{ environment }}" -
+    # pipeline.py auto-creates it and seeds the Variables below the first
+    # time this app+environment is provisioned. Edit values under
+    # Settings -> Environments -> {{ environment }} -> Variables at any time;
+    # no need to re-run the Jira ticket.
+    environment: {{ environment }}
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      TF_VAR_aws_region: {% raw %}${{ vars.AWS_REGION }}{% endraw %}
+      TF_VAR_eks_cluster_name: {% raw %}${{ vars.EKS_CLUSTER_NAME }}{% endraw %}
+      TF_VAR_eks_oidc_provider_arn: {% raw %}${{ vars.EKS_OIDC_PROVIDER_ARN }}{% endraw %}
+    outputs:
+      iam_role_arn: {% raw %}${{ steps.tf-outputs.outputs.iam_role_arn }}{% endraw %}
+      ecr_repository_url: {% raw %}${{ steps.tf-outputs.outputs.ecr_repository_url }}{% endraw %}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: {% raw %}${{ vars.GITHUB_OIDC_ROLE_ARN }}{% endraw %}
+          aws-region: {% raw %}${{ vars.AWS_REGION }}{% endraw %}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform init (backend config from Environment variables)
+        run: |
+          terraform init \
+            -backend-config="bucket={% raw %}${{ vars.TF_STATE_BUCKET }}{% endraw %}" \
+            -backend-config="key={{ environment }}/{{ app_name }}/terraform.tfstate" \
+            -backend-config="region={% raw %}${{ vars.AWS_REGION }}{% endraw %}" \
+            -backend-config="dynamodb_table={% raw %}${{ vars.TF_LOCK_TABLE }}{% endraw %}"
+
+      - name: Adopt pre-existing resources instead of recreating them
+        # If the ECR repo or IAM role already exist (a previous run, a manual
+        # creation, or state that got wiped) but aren't in *this* state file
+        # yet, `terraform apply` would fail with "already exists". Import
+        # them first so apply is a no-op / update instead.
+        run: |
+          RESOURCE_NAME="{{ app_name }}-{{ environment }}"
+
+          if ! terraform state list | grep -qx "aws_ecr_repository.this"; then
+            if aws ecr describe-repositories --repository-names "$RESOURCE_NAME" >/dev/null 2>&1; then
+              echo "ECR repo $RESOURCE_NAME already exists - importing instead of creating"
+              terraform import aws_ecr_repository.this "$RESOURCE_NAME"
+            fi
+          fi
+
+          ROLE_NAME="${RESOURCE_NAME}-irsa"
+          if ! terraform state list | grep -qx "aws_iam_role.irsa"; then
+            if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+              echo "IAM role $ROLE_NAME already exists - importing instead of creating"
+              terraform import aws_iam_role.irsa "$ROLE_NAME"
+            fi
+          fi
+
+      - run: terraform plan -out=tfplan
+
+      - run: terraform apply -auto-approve tfplan
+
+      - id: tf-outputs
+        run: |
+          echo "iam_role_arn=$(terraform output -raw iam_role_arn)" >> "$GITHUB_OUTPUT"
+          echo "ecr_repository_url=$(terraform output -raw ecr_repository_url)" >> "$GITHUB_OUTPUT"

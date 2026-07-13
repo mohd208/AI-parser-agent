@@ -1,0 +1,14 @@
+FROM maven:3.9-eclipse-temurin-{{ runtime.version }} AS build
+WORKDIR /app
+COPY pom.xml ./
+RUN mvn -B dependency:go-offline
+COPY . .
+RUN mvn -B package -DskipTests
+
+FROM eclipse-temurin:{{ runtime.version }}-jre
+WORKDIR /app
+RUN useradd -m app
+COPY --from=build /app/target/*.jar app.jar
+USER app
+EXPOSE {{ runtime.port }}
+ENTRYPOINT ["java", "-jar", "app.jar"]

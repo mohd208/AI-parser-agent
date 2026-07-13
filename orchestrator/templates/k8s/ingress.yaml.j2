@@ -1,0 +1,23 @@
+# Requires the AWS Load Balancer Controller to already be installed on the
+# shared cluster (see bootstrap-infra). Adjust the host to your real domain.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ resource_name }}
+  namespace: {{ namespace }}
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  rules:
+    - host: {{ resource_name }}.internal.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ resource_name }}
+                port:
+                  number: 80
